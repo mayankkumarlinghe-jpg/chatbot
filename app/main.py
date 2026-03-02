@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from slowapi import Limiter
@@ -49,9 +49,9 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/chat", response_model=QueryResponse)
 @limiter.limit(os.getenv("RATE_LIMIT", "5/minute"))
-async def chat(request: QueryRequest):
+async def chat(request: Request, body: QueryRequest):
     try:
-        query = validate_query(request.query)
+        query = validate_query(body.query)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

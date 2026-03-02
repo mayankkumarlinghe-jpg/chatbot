@@ -30,24 +30,43 @@ embedder = SentenceTransformer(
 # -------------------------------------------------
 # Load 4-bit Quantized LLM (Huge RAM Reduction)
 # -------------------------------------------------
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_use_double_quant=True,
-)
+tokenizer = None
+model = None
 
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_NAME,
-    use_fast=True
-)
 
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    quantization_config=bnb_config,
-    device_map="auto"
-)
+def _load_model_if_needed():
+    """Lazily load the tokenizer and model on first request.
 
-model.eval()  # Ensure inference mode
+    This avoids heavy startup memory usage and allows the FastAPI app to start
+    even when quantized binaries (bitsandbytes) are unavailable or incompatible.
+    """
+    global tokenizer, model
+
+    if tokenizer is not None and model is not None:
+        return
+
+    try:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+
+        model.eval()
+    except Exception as e:
+        print(f"Warning: quantized model load failed ({e}). Falling back to CPU model.")
+
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map={"": "cpu"})
+        model.to("cpu")
+        model.eval()
 
 
 # -------------------------------------------------
@@ -107,7 +126,10 @@ def add_document(text: str, filename: str):
         ids=[f"{filename}_{i}" for i in range(len(chunks))]
     )
 
-    chroma_client.persist()
+    # Persist if the client implementation supports it (API may vary by version)
+    persist_fn = getattr(chroma_client, "persist", None)
+    if callable(persist_fn):
+        persist_fn()
 
 
 # -------------------------------------------------
@@ -136,6 +158,21 @@ def generate_answer(query: str):
     """
 
     results = retrieve(query)
+
+    # If running in a lightweight/dev environment, skip loading the LLM
+    # to avoid OOM or long downloads. Set SKIP_MODEL_LOAD=true in `.env`
+    # to enable this behavior.
+    if os.getenv("SKIP_MODEL_LOAD", "false").lower() in ("1", "true", "yes"):
+        if not results["documents"] or not results["documents"][0]:
+            return "I don't know.", []
+
+        context = "\n".join(results["documents"][0])[:1500]
+        answer = f"Context summary: {context[:500]}"
+        sources = list(set([m["source"] for m in results["metadatas"][0]]))
+        return answer, sources
+
+    # Ensure the model is loaded before generation (lazy load)
+    _load_model_if_needed()
 
     if not results["documents"] or not results["documents"][0]:
         return "I don't know.", []
