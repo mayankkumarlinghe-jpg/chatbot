@@ -9,39 +9,38 @@ from pypdf import PdfReader
 from app.models import QueryRequest, QueryResponse, UploadResponse
 from app.rag import add_document, generate_answer
 from app.security import validate_query
-from flask import Flask, request, jsonify
-from flask_cors import CORS  # ← import
 
-app = Flask(__name__)
-CORS(app)  # ← ye line dal do, saare endpoints ke liye CORS enable ho jaayega
-
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    data = request.json
-    print(data)
-    return jsonify({"reply": "Backend received: " + data["message"]})
-
-if __name__ == "__main__":
-    app.run(debug=True)
-
+# Load environment
 load_dotenv()
 
+# Rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
+# FastAPI app
 app = FastAPI()
 app.state.limiter = limiter
 
 # CORS
 origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# -----------------------------
+# Chat endpoint (replacing Flask)
+# -----------------------------
+@app.post("/api/chat")
+async def chat_endpoint(body: QueryRequest):
+    # Example: echo the message
+    return {"reply": "Backend received: " + body.query}
+
+# -----------------------------
+# File upload
+# -----------------------------
 @app.post("/upload", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
     if file.content_type not in ["application/pdf", "text/plain"]:
@@ -61,9 +60,12 @@ async def upload_file(file: UploadFile = File(...)):
 
     return {"message": "Document processed successfully."}
 
+# -----------------------------
+# Chat RAG endpoint
+# -----------------------------
 @app.post("/chat", response_model=QueryResponse)
 @limiter.limit(os.getenv("RATE_LIMIT", "5/minute"))
-async def chat(request: Request, body: QueryRequest):
+async def rag_chat(request: Request, body: QueryRequest):
     try:
         query = validate_query(body.query)
     except ValueError as e:
