@@ -9,6 +9,20 @@ from pypdf import PdfReader
 from app.models import QueryRequest, QueryResponse, UploadResponse
 from app.rag import add_document, generate_answer
 from app.security import validate_query
+from flask import Flask, request, jsonify
+from flask_cors import CORS  # ← import
+
+app = Flask(__name__)
+CORS(app)  # ← ye line dal do, saare endpoints ke liye CORS enable ho jaayega
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.json
+    print(data)
+    return jsonify({"reply": "Backend received: " + data["message"]})
+
+if __name__ == "__main__":
+    app.run(debug=True)
 
 load_dotenv()
 
