@@ -1,129 +1,125 @@
 import os
-from io import BytesIO
+import re
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from pypdf import PdfReader
+from pathlib import Path
 
-from app.models import QueryRequest, QueryResponse, UploadResponse
-from app.rag import add_document, generate_answer
-from app.security import validate_query
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from groq import Groq
+from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 load_dotenv()
 
-limiter = Limiter(key_func=get_remote_address)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+DATA_FILE = Path("data/data.txt")
 
-DATA_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# --- Load data once at startup ---
+data_chunks: list[str] = []
 
-
-def preload_data_folder():
-    if not os.path.exists(DATA_FOLDER):
-        print(f"[Startup] No data folder found at {DATA_FOLDER}, skipping preload.")
+def load_data():
+    global data_chunks
+    if not DATA_FILE.exists():
+        print("WARNING: data/data.txt not found")
         return
-
-    files = [f for f in os.listdir(DATA_FOLDER) if f.endswith((".txt", ".pdf"))]
-
-    if not files:
-        print("[Startup] No .txt or .pdf files found in data/ folder.")
-        return
-
-    for filename in files:
-        filepath = os.path.join(DATA_FOLDER, filename)
-        print(f"[Startup] Loading: {filename}")
-
-        with open(filepath, "rb") as f:
-            content = f.read()
-
-        if filename.endswith(".pdf"):
-            pdf = PdfReader(BytesIO(content))
-            text = ""
-            for page in pdf.pages:
-                text += page.extract_text() or ""
+    text = DATA_FILE.read_text(encoding="utf-8")
+    # Split into chunks of ~500 chars, respecting paragraph breaks
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    chunks = []
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) < 500:
+            current += "\n\n" + para if current else para
         else:
-            text = content.decode("utf-8", errors="ignore")
-
-        if text.strip():
-            add_document(text, filename)
-            print(f"[Startup] Loaded: {filename}")
-        else:
-            print(f"[Startup] Skipped (empty): {filename}")
-
+            if current:
+                chunks.append(current)
+            current = para
+    if current:
+        chunks.append(current)
+    data_chunks = chunks
+    print(f"Loaded {len(data_chunks)} chunks from data.txt")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    preload_data_folder()
+    load_data()
     yield
 
+# --- Simple keyword search (replaces chromadb + embeddings) ---
+def retrieve_context(query: str, top_k: int = 4) -> str:
+    if not data_chunks:
+        return ""
+    query_words = set(re.findall(r"\w+", query.lower()))
+    scored = []
+    for chunk in data_chunks:
+        chunk_words = set(re.findall(r"\w+", chunk.lower()))
+        score = len(query_words & chunk_words)
+        if score > 0:
+            scored.append((score, chunk))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = [c for _, c in scored[:top_k]]
+    return "\n\n---\n\n".join(top)
 
+# --- App setup ---
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
-
-raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
-origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.mount("/static", StaticFiles(directory="public"), name="static")
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
+class ChatRequest(BaseModel):
+    message: str
+    history: list[dict] = []
 
 @app.get("/")
 async def root():
-    return {"message": "Chatbot API is running. POST to /chat or /api/chat."}
+    return {"status": "ok"}
 
+@app.post("/chat")
+@limiter.limit("20/minute")
+async def chat(request: Request, body: ChatRequest):
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not set")
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="Empty message")
 
-@app.post("/upload", response_model=UploadResponse)
-async def upload_file(file: UploadFile = File(...)):
-    if file.content_type not in ["application/pdf", "text/plain"]:
-        raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed.")
+    context = retrieve_context(body.message)
 
-    content = await file.read()
+    system_prompt = (
+        "You are a helpful assistant. Answer questions based on the provided context. "
+        "If the answer is not in the context, say you don't have that information.\n\n"
+    )
+    if context:
+        system_prompt += f"Context:\n{context}"
 
-    if file.content_type == "application/pdf":
-        pdf = PdfReader(BytesIO(content))
-        text = ""
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-    else:
-        text = content.decode("utf-8", errors="ignore")
+    messages = [{"role": "system", "content": system_prompt}]
+    # keep last 6 turns to limit token usage
+    for turn in body.history[-6:]:
+        if turn.get("role") in ("user", "assistant") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": body.message})
 
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Could not extract text from the file.")
-
-    add_document(text, file.filename)
-    return {"message": "Document processed successfully."}
-
-
-@app.post("/chat", response_model=QueryResponse)
-@limiter.limit(os.getenv("RATE_LIMIT", "5/minute"))
-async def rag_chat(request: Request, body: QueryRequest):
     try:
-        query = validate_query(body.query)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    answer, sources = generate_answer(query)
-    return {"answer": answer, "sources": sources}
-
-
-@app.post("/api/chat", response_model=QueryResponse)
-@limiter.limit(os.getenv("RATE_LIMIT", "5/minute"))
-async def api_chat(request: Request, body: QueryRequest):
-    try:
-        query = validate_query(body.query)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    answer, sources = generate_answer(query)
-    return {"answer": answer, "sources": sources}
+        client = Groq(api_key=GROQ_API_KEY)
+        completion = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=messages,
+            max_tokens=512,
+            temperature=0.5,
+        )
+        reply = completion.choices[0].message.content
+        return {"reply": reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
