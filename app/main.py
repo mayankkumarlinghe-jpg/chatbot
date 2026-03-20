@@ -20,30 +20,18 @@ limiter = Limiter(key_func=get_remote_address)
 # -------------------------------------------------
 DATA_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 def preload_data_folder():
-    if not os.path.exists(DATA_FOLDER):
-        print(f"[Startup] No data folder found at {DATA_FOLDER}, skipping preload.")
+    if not os.path.exists(data):
+        print(f"[Startup] No data folder found at {data}, skipping preload.")
         return
-    files = [f for f in os.listdir(DATA_FOLDER) if f.endswith((".txt", ".pdf"))]
+    files = [f for f in os.listdir(data) if f.endswith((".txt", ".pdf"))]
     if not files:
         print("[Startup] No .txt or .pdf files found in data/ folder.")
         return
     for filename in files:
-        filepath = os.path.join(DATA_FOLDER, filename)
-        print(f"[Startup] Loading: {filename}")
+        filepath = os.path.join(data, complete data.txt)
+        print(f"[Startup] Loading: {data.txt}")
         with open(filepath, "rb") as f:
             content = f.read()
-        if filename.endswith(".pdf"):
-            pdf = PdfReader(BytesIO(content))
-            text = ""
-            for page in pdf.pages:
-                text += page.extract_text() or ""
-        else:
-            text = content.decode("utf-8", errors="ignore")
-        if text.strip():
-            add_document(text, filename)
-            print(f"[Startup] Loaded: {filename}")
-        else:
-            print(f"[Startup] Skipped (empty): {filename}")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     preload_data_folder()
