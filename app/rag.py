@@ -3,11 +3,6 @@ import chromadb
 from groq import Groq
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-)
 
 load_dotenv()
 
@@ -122,7 +117,7 @@ Question:
 
 Answer: """
 
-   response = groq_client.chat.completions.create(
+    response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[
             {"role": "user", "content": prompt}
@@ -131,7 +126,7 @@ Answer: """
         temperature=0.6,
     )
 
-answer = response.choices[0].message.content.strip()
+    answer = response.choices[0].message.content.strip()
 
     sources = list(set([m["source"] for m in results["metadatas"][0]]))
 
