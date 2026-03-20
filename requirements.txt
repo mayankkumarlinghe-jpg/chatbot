@@ -16,7 +16,7 @@ slowapi==0.1.9
 # -----------------------------
 # Groq API (replaces local LLM)
 # -----------------------------
-groq==0.9.0
+groq==0.11.0
 
 # -----------------------------
 # Embeddings (lightweight, CPU only)
@@ -26,6 +26,8 @@ sentence-transformers==2.7.0
 # Vector Database
 # -----------------------------
 chromadb==0.4.24
+
+httpx==0.27.0 
 
 # -----------------------------
 # PDF Processing
