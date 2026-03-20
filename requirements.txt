@@ -13,15 +13,12 @@ python-dotenv==1.0.1
 slowapi==0.1.9
 
 # -----------------------------
-# LLM + Quantization
+# Groq API (replaces local LLM)
 # -----------------------------
-transformers==4.38.2
-torch==2.2.1
-accelerate==0.27.2
-bitsandbytes==0.42.0
+groq==0.9.0
 
 # -----------------------------
-# Embeddings
+# Embeddings (lightweight, CPU only)
 # -----------------------------
 sentence-transformers==2.6.1
 
@@ -34,9 +31,3 @@ chromadb==0.4.24
 # PDF Processing
 # -----------------------------
 pypdf==4.0.2
-
-# -----------------------------
-# Token Utilities
-# -----------------------------
-tiktoken==0.6.0
-numpy==1.25.2
